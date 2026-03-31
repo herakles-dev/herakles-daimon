@@ -11,7 +11,7 @@ AI-curated, mood-responsive media platform built with the Gemini Live API. An au
 - **Voice-first AI host** — Gemini Multimodal Live API over WebSocket; the AI listens, speaks, and reacts to your mood in real time
 - **Dual modes** — Muse (personal mode) and Daimon (always-on YouTube livestream)
 - **14 server-side tools** — Gemini calls tools to fetch tracks, discover videos, skip content, queue up next picks, search YouTube, and read comments; the browser never touches the database
-- **140+ curated YouTube channels** — music, tech, comedy, science, journalism, making, and more; 11 categories seeded in `backend/scraper/seeds/channels.yml`
+- **YouTube channel seeds** — add your subscriptions to `backend/scraper/seeds/channels.yml`; 11 categories supported (music, tech, comedy, science, journalism, and more)
 - **HLS music streaming** — adaptive bitrate (128k + 64k AAC), waveform visualization, album art, gapless playback via hls.js
 - **Voice effects chain** — EQ, reverb, delay, compression, pitch shift, all processed client-side in Web Audio API; 5 presets + full manual control
 - **Preference learning** — skip and completion events feed a `playback_log`; Gemini Flash tags content; pgvector powers similarity search
@@ -223,7 +223,7 @@ sudo systemctl start muse-live    # If using the provided systemd unit
 
 ## Channel Categories
 
-143 channels seeded in `backend/scraper/seeds/channels.yml`:
+Add your YouTube subscriptions to `backend/scraper/seeds/channels.yml`. Supported categories:
 
 | Category | Count | Examples |
 |----------|-------|---------|
@@ -239,7 +239,7 @@ sudo systemctl start muse-live    # If using the provided systemd unit
 | outdoors | 6 | Matthew Posa, Kraig Adams |
 | finance | 2 | Benjamin Cowen, glassnode |
 
-Add or remove channels by editing `backend/scraper/seeds/channels.yml`.
+See `backend/scraper/seeds/channels.yml` for the format and examples.
 
 ---
 

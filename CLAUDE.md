@@ -101,7 +101,7 @@ PostgreSQL + pgvector (:5432 internal)
 | `src/lib/voice-effects.ts` | VoiceEffectsChain: EQ → reverb → delay → compressor, bypass crossfade |
 | `src/context/GeminiProvider.tsx` | React context exposing all hook state + actions to component tree |
 | `src/app/page.tsx` | Main layout: routes contentMode + uiMode, mounts panels |
-| `backend/scraper/seeds/channels.yml` | 143 subscribed YouTube channels across 11 categories |
+| `backend/scraper/seeds/channels.yml` | YouTube channel seeds (user-configured, 11 categories) |
 | `GEMINI_VOICE.md` | Full Gemini Live API reference |
 
 ## Adding a New Gemini Tool
