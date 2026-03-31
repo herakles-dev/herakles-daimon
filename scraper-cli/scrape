@@ -1,0 +1,452 @@
+#!/usr/bin/env bash
+# ============================================================
+# Herakles Play — Content Scraper CLI
+#
+# Two modes:
+#   ./scrape discover <channel_url> [--max N]   → find videos, save metadata
+#   ./scrape ingest [--file FILE]               → push staged videos to DB
+#   ./scrape tag [--limit N] [--engine gemini]  → tag untagged videos
+#   ./scrape status                             → DB stats
+#   ./scrape add <youtube_url> [youtube_url...] → quick-add individual videos
+#
+# The "discover" and "add" commands run on the HOST (not Docker).
+# ============================================================
+
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+STAGING_DIR="$SCRIPT_DIR/staging"
+DB_CONTAINER="daimon-db-1"
+BACKEND_URL="http://localhost:8150"
+
+mkdir -p "$STAGING_DIR"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+info()  { echo -e "${CYAN}[scrape]${NC} $*"; }
+ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
+err()   { echo -e "${RED}[✗]${NC} $*" >&2; }
+
+# ─── DISCOVER ────────────────────────────────────────────────
+cmd_discover() {
+    local url="${1:?Usage: scrape discover <channel_url> [--max N]}"
+    shift
+    local max_videos=10
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --max) max_videos="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    info "Discovering up to $max_videos videos from $url"
+
+    local outfile="$STAGING_DIR/discover-$(date +%s).jsonl"
+
+    python3 -m yt_dlp \
+        --flat-playlist \
+        --playlist-end "$max_videos" \
+        --print '{"id":"%(id)s","title":"%(title)s","channel":"%(channel)s","duration":%(duration)s,"thumbnail":"%(thumbnail)s","upload_date":"%(upload_date)s","view_count":%(view_count)s,"url":"https://www.youtube.com/watch?v=%(id)s"}' \
+        --no-warnings \
+        "$url" 2>/dev/null | while IFS= read -r line; do
+            echo "$line" >> "$outfile"
+        done
+
+    local count
+    count=$(wc -l < "$outfile" 2>/dev/null || echo 0)
+    ok "Discovered $count videos → $outfile"
+    echo ""
+
+    # Preview first 5
+    head -5 "$outfile" | python3 -c "
+import sys, json
+for line in sys.stdin:
+    v = json.loads(line)
+    dur = int(v.get('duration') or 0)
+    mins = f'{dur//60}:{dur%60:02d}' if dur else '?'
+    print(f'  {v[\"id\"]}  {mins}  {v[\"title\"][:70]}')
+"
+    if [ "$count" -gt 5 ]; then
+        echo "  ... and $((count - 5)) more"
+    fi
+}
+
+# ─── ADD ─────────────────────────────────────────────────────
+cmd_add() {
+    if [ $# -eq 0 ]; then
+        err "Usage: scrape add <youtube_url> [youtube_url...]"
+        exit 1
+    fi
+
+    local outfile="$STAGING_DIR/add-$(date +%s).jsonl"
+
+    for url in "$@"; do
+        info "Fetching metadata: $url"
+        python3 -m yt_dlp \
+            --no-download \
+            --print '{"id":"%(id)s","title":"%(title)s","channel":"%(channel)s","duration":%(duration)s,"thumbnail":"%(thumbnail)s","upload_date":"%(upload_date)s","view_count":%(view_count)s,"description":"%(description).500s","url":"%(webpage_url)s"}' \
+            --no-warnings \
+            "$url" 2>/dev/null >> "$outfile" || warn "Failed: $url"
+    done
+
+    local count
+    count=$(wc -l < "$outfile" 2>/dev/null || echo 0)
+    ok "Added $count video(s) to staging → $outfile"
+}
+
+# ─── TRANSCRIPT ──────────────────────────────────────────────
+cmd_transcript() {
+    local video_id="${1:?Usage: scrape transcript <video_id>}"
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    info "Fetching transcript for $video_id"
+
+    # Try auto-subs first
+    python3 -m yt_dlp \
+        --skip-download \
+        --write-auto-sub \
+        --sub-lang en \
+        --sub-format vtt \
+        --no-warnings \
+        -o "$tmpdir/%(id)s.%(ext)s" \
+        "https://www.youtube.com/watch?v=$video_id" 2>/dev/null
+
+    local vtt_file
+    vtt_file=$(find "$tmpdir" -name "*.vtt" | head -1)
+
+    if [ -z "$vtt_file" ]; then
+        # Try manual subs
+        python3 -m yt_dlp \
+            --skip-download \
+            --write-sub \
+            --sub-lang en \
+            --sub-format vtt \
+            --no-warnings \
+            -o "$tmpdir/%(id)s.%(ext)s" \
+            "https://www.youtube.com/watch?v=$video_id" 2>/dev/null
+        vtt_file=$(find "$tmpdir" -name "*.vtt" | head -1)
+    fi
+
+    if [ -z "$vtt_file" ]; then
+        warn "No transcript available for $video_id"
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    # Clean VTT → plain text
+    python3 -c "
+import re, sys
+lines = open('$vtt_file').readlines()
+seen = set()
+out = []
+ts = re.compile(r'^\d{2}:\d{2}')
+tag = re.compile(r'<[^>]+>')
+for line in lines:
+    line = line.strip()
+    if not line or line.startswith('WEBVTT') or line.startswith('NOTE') or ts.match(line) or line.isdigit():
+        continue
+    clean = tag.sub('', line).strip()
+    if clean and clean not in seen:
+        seen.add(clean)
+        out.append(clean)
+print(' '.join(out))
+"
+
+    rm -rf "$tmpdir"
+}
+
+# ─── INGEST ──────────────────────────────────────────────────
+cmd_ingest() {
+    info "Ingesting staged videos to database..."
+    python3 "$SCRIPT_DIR/ingest.py"
+}
+
+# ─── TAG (via Docker/Gemini or show for CLI tagging) ─────────
+cmd_tag() {
+    local limit=""
+    local engine="gemini"
+    local show_for_cli=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --limit) limit="--limit $2"; shift 2 ;;
+            --engine) engine="$2"; shift 2 ;;
+            --cli) show_for_cli=true; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    if [ "$show_for_cli" = true ]; then
+        # Output untagged videos as structured data for Claude Code to analyze
+        info "Fetching untagged videos for CLI tagging..."
+
+        docker exec "$DB_CONTAINER" psql -U play -d daimon_play -t -A -F $'\t' -c "
+            SELECT v.id, v.title, v.channel, v.duration_sec, v.url
+            FROM videos v
+            LEFT JOIN video_tags vt ON vt.video_id = v.id
+            WHERE vt.video_id IS NULL
+               OR vt.vibe = 'unknown'
+               OR array_length(vt.mood_tags, 1) IS NULL
+            ORDER BY v.id
+            ${limit:+LIMIT ${limit#--limit }}
+        " 2>/dev/null
+
+        return
+    fi
+
+    info "Tagging via $engine engine (in Docker)..."
+    docker compose -f "$PROJECT_DIR/docker-compose.yml" exec backend \
+        python -m scraper.retag $limit
+}
+
+# ─── TAG-WRITE (write tags from CLI analysis to DB) ──────────
+cmd_tag_write() {
+    # Reads JSON from stdin: {"video_id": N, "pacing": N, ...}
+    local json
+    json=$(cat)
+
+    local video_id pacing stimulation novelty vibe mood_tags content_tags summary
+
+    video_id=$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin)['video_id'])")
+    pacing=$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('pacing',5))")
+    stimulation=$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stimulation',5))")
+    novelty=$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('novelty',5))")
+    vibe=$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('vibe','unknown'))")
+    mood_tags=$(echo "$json" | python3 -c "import sys,json; tags=json.load(sys.stdin).get('mood_tags',[]); print('{'+','.join(tags)+'}')")
+    content_tags=$(echo "$json" | python3 -c "import sys,json; tags=json.load(sys.stdin).get('content_tags',[]); print('{'+','.join(tags)+'}')")
+    summary=$(echo "$json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('claude_summary','').replace(chr(39), chr(39)+chr(39)))")
+
+    docker exec "$DB_CONTAINER" psql -U play -d daimon_play -c "
+        INSERT INTO video_tags (video_id, pacing, stimulation, novelty, vibe, mood_tags, content_tags, claude_summary)
+        VALUES ($video_id, $pacing, $stimulation, $novelty, '$vibe', '$mood_tags', '$content_tags', '$summary')
+        ON CONFLICT (video_id) DO UPDATE SET
+            pacing = EXCLUDED.pacing,
+            stimulation = EXCLUDED.stimulation,
+            novelty = EXCLUDED.novelty,
+            vibe = EXCLUDED.vibe,
+            mood_tags = EXCLUDED.mood_tags,
+            content_tags = EXCLUDED.content_tags,
+            claude_summary = EXCLUDED.claude_summary,
+            tagged_at = NOW();
+    " > /dev/null 2>&1
+
+    ok "Tagged video_id=$video_id vibe=$vibe pacing=$pacing"
+}
+
+# ─── STATUS ──────────────────────────────────────────────────
+cmd_status() {
+    echo ""
+    info "Content Database Stats"
+    echo ""
+
+    curl -s "$BACKEND_URL/api/videos/stats" 2>/dev/null | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f\"  Videos:     {d['total_videos']}\")
+print(f\"  Tagged:     {d['total_tagged']}\")
+print(f\"  Avg Pacing: {d['avg_pacing'] or 'N/A'}\")
+print()
+if d['vibe_distribution']:
+    print('  Vibes:')
+    for vibe, cnt in sorted(d['vibe_distribution'].items(), key=lambda x: -x[1])[:10]:
+        print(f'    {cnt:3d}  {vibe}')
+print()
+if d['top_mood_tags']:
+    print('  Top Moods:')
+    for tag, cnt in sorted(d['top_mood_tags'].items(), key=lambda x: -x[1])[:10]:
+        print(f'    {cnt:3d}  {tag}')
+" 2>/dev/null || err "Backend not reachable at $BACKEND_URL"
+
+    echo ""
+
+    # Staging stats
+    local staging_count
+    staging_count=$(find "$STAGING_DIR" -name "*.jsonl" -not -path "*/processed/*" -size +0c 2>/dev/null | xargs cat 2>/dev/null | wc -l || echo 0)
+    info "Staging: $staging_count video(s) pending ingest"
+
+    # Untagged count
+    local untagged
+    untagged=$(docker exec "$DB_CONTAINER" psql -U play -d daimon_play -t -c "
+        SELECT COUNT(*) FROM videos v
+        LEFT JOIN video_tags vt ON vt.video_id = v.id
+        WHERE vt.video_id IS NULL OR vt.vibe = 'unknown'
+    " 2>/dev/null | tr -d '[:space:]')
+    info "Untagged: $untagged video(s) need tagging"
+    echo ""
+}
+
+# ─── EMBED ───────────────────────────────────────────────────
+cmd_embed() {
+    info "Generating embeddings for unembedded videos..."
+    docker compose -f "$PROJECT_DIR/docker-compose.yml" exec backend \
+        python -m scraper.embed "$@"
+}
+
+# ─── MUSIC ───────────────────────────────────────────────────
+cmd_music() {
+    local subcmd="${1:-help}"
+    shift || true
+
+    case "$subcmd" in
+        discover)
+            # Discover tracks from a music source (runs inside Docker)
+            # Usage: scrape music discover [--source jamendo|incompetech] [--mood TAG,...] [--genre GENRE] [--max N]
+            local source="jamendo"
+            local mood=""
+            local genre=""
+            local max=50
+
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --source) source="$2"; shift 2 ;;
+                    --mood)   mood="$2";   shift 2 ;;
+                    --genre)  genre="$2";  shift 2 ;;
+                    --max)    max="$2";    shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+
+            info "Discovering music: source=$source mood='$mood' genre='$genre' max=$max"
+
+            local py_args="--source $source --max $max"
+            [ -n "$mood"  ] && py_args="$py_args --mood $mood"
+            [ -n "$genre" ] && py_args="$py_args --genre $genre"
+            # shellcheck disable=SC2086
+            docker compose -f "$PROJECT_DIR/docker-compose.yml" exec backend \
+                python -m scraper.music_pipeline $py_args
+            ;;
+
+        seed)
+            # Seed the DB with 200+ mood-diverse tracks
+            # Usage: scrape music seed [--dry-run] [--batch BATCH]
+            local seed_args=""
+
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --dry-run) seed_args="$seed_args --dry-run"; shift ;;
+                    --batch)   seed_args="$seed_args --batch $2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+
+            info "Seeding music library$( [ -n "$seed_args" ] && echo " ($seed_args)" || true )..."
+            # shellcheck disable=SC2086
+            docker compose -f "$PROJECT_DIR/docker-compose.yml" exec backend \
+                python -m scraper.seed_music $seed_args
+            ;;
+
+        status)
+            # Show music library status (track counts, by source, seed plan)
+            info "Music library status:"
+            docker compose -f "$PROJECT_DIR/docker-compose.yml" exec backend \
+                python -m scraper.seed_music --status
+            ;;
+
+        tag)
+            # Re-tag untagged (or all) music tracks via Gemini Flash
+            # Usage: scrape music tag [--limit N] [--all]
+            info "Tagging music tracks..."
+            docker compose -f "$PROJECT_DIR/docker-compose.yml" exec backend \
+                python -m scraper.music_pipeline --retag "$@"
+            ;;
+
+        embed)
+            # Generate embeddings for unembedded music tracks
+            info "Embedding music tracks..."
+            docker compose -f "$PROJECT_DIR/docker-compose.yml" exec backend \
+                python -m scraper.music_pipeline --embed "$@"
+            ;;
+
+        help|--help|-h|*)
+            echo "Usage: scrape music <subcommand> [options]"
+            echo ""
+            echo "Subcommands:"
+            echo "  discover   Discover tracks from a source (Jamendo/Incompetech)"
+            echo "  seed       Seed DB with 200+ mood-diverse tracks"
+            echo "  status     Show music library stats and seed plan"
+            echo "  tag        Re-tag tracks via Gemini Flash"
+            echo "  embed      Generate vector embeddings for tracks"
+            echo ""
+            echo "Discover options:"
+            echo "  --source jamendo|incompetech   Default: jamendo"
+            echo "  --mood   TAG[,TAG,...]         e.g. 'chillout,relaxing'"
+            echo "  --genre  GENRE                 e.g. 'Jazz', 'Cinematic'"
+            echo "  --max    N                     Max tracks to fetch (default: 50)"
+            echo ""
+            echo "Seed options:"
+            echo "  --dry-run                      Discover only, no DB writes"
+            echo "  --batch  BATCH                 Run one category only"
+            echo "           Valid batches: chill, focus, energetic, melancholic, jazz, cinematic"
+            echo ""
+            echo "Workflow:"
+            echo "  1. scrape music seed --dry-run       # preview what would be fetched"
+            echo "  2. scrape music seed                 # full 200+ track seed"
+            echo "  3. scrape music status               # verify counts"
+            echo "  4. scrape music seed --batch chill   # top up a single category"
+            ;;
+    esac
+}
+
+# ─── ROUTER ──────────────────────────────────────────────────
+case "${1:-help}" in
+    discover)   shift; cmd_discover "$@" ;;
+    add)        shift; cmd_add "$@" ;;
+    transcript) shift; cmd_transcript "$@" ;;
+    ingest)     shift; cmd_ingest "$@" ;;
+    tag)        shift; cmd_tag "$@" ;;
+    tag-write)  shift; cmd_tag_write "$@" ;;
+    status)     shift; cmd_status "$@" ;;
+    embed)      shift; cmd_embed "$@" ;;
+    music)      shift; cmd_music "$@" ;;
+    help|--help|-h)
+        echo "Herakles Play — Content Scraper CLI"
+        echo ""
+        echo "Usage: scrape <command> [options]"
+        echo ""
+        echo "Video commands:"
+        echo "  discover <channel_url> [--max N]   Discover videos from a YouTube channel"
+        echo "  add <url> [url...]                 Quick-add individual YouTube videos"
+        echo "  transcript <video_id>              Fetch transcript for a video (host-side)"
+        echo "  ingest [--file FILE]               Push staged videos to database"
+        echo "  tag [--limit N] [--cli]            Tag videos (--cli for Claude Code mode)"
+        echo "  tag-write                          Write tags from stdin JSON to DB"
+        echo "  embed                              Generate vector embeddings"
+        echo "  status                             Show database stats"
+        echo ""
+        echo "Music commands:"
+        echo "  music discover [--source S] [--mood TAGS] [--genre G] [--max N]"
+        echo "  music seed     [--dry-run] [--batch BATCH]"
+        echo "  music status"
+        echo "  music tag      [--limit N]"
+        echo "  music embed"
+        echo ""
+        echo "  Run 'scrape music help' for full music usage."
+        echo ""
+        echo "Video workflow:"
+        echo "  1. scrape discover <channel>       # find videos (runs on host)"
+        echo "  2. scrape ingest                   # push to DB"
+        echo "  3. scrape tag                      # auto-tag via Gemini"
+        echo "     OR use Claude Code CLI:         # interactive tagging"
+        echo "     scrape tag --cli | claude-tag   # pipe to Claude for analysis"
+        echo "  4. scrape embed                    # generate search vectors"
+        echo ""
+        echo "Music workflow:"
+        echo "  1. scrape music seed --dry-run     # preview (no DB writes)"
+        echo "  2. scrape music seed               # seed 200+ tracks"
+        echo "  3. scrape music status             # verify counts"
+        echo ""
+        ;;
+    *)
+        err "Unknown command: $1"
+        echo "Run 'scrape help' for usage"
+        exit 1
+        ;;
+esac

@@ -1,0 +1,32 @@
+[Unit]
+Description=Daimon Live — YouTube Broadcast Pipeline
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=your-user
+Group=your-user
+WorkingDirectory=/home/your-user/herakles-daimon/broadcast
+ExecStart=/home/your-user/herakles-daimon/broadcast/start.sh
+ExecStop=/home/your-user/herakles-daimon/broadcast/stop.sh
+Restart=on-failure
+RestartSec=30
+
+# Prevent rapid restart storms — allow 10 restarts per 10 minutes
+StartLimitBurst=10
+StartLimitIntervalSec=600
+
+Environment=HOME=/home/your-user
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+
+# Give FFmpeg time to flush on stop
+TimeoutStopSec=15
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=muse-live
+
+[Install]
+WantedBy=multi-user.target

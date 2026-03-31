@@ -1,0 +1,180 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface: #0a0a0a;
+  --surface-elevated: #141414;
+  --accent: #8b5cf6;
+
+  /* Safe area insets — zero on non-notch devices */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  /* Extend behind the notch / home indicator on iOS */
+  padding-top: var(--safe-top);
+  padding-right: var(--safe-right);
+  padding-bottom: var(--safe-bottom);
+  padding-left: var(--safe-left);
+  overflow: hidden;
+  /* Prevent pull-to-refresh and over-scroll bounce */
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+  background: var(--surface);
+  color: #e5e5e5;
+  font-family: system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Hide scrollbars everywhere */
+::-webkit-scrollbar { display: none; }
+
+/* Video player fills viewport */
+video {
+  object-fit: cover;
+}
+
+/* ------------------------------------------------------------------ */
+/* Landscape-specific layout                                           */
+/* ------------------------------------------------------------------ */
+
+@media (orientation: landscape) {
+  /* Remove top/bottom safe-area padding on body in landscape —
+     the overlay components handle their own inset offsets */
+  html, body {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  /* Video controls / UI elements respect side notches (iPhone notch
+     can appear on either side in landscape) */
+  .safe-landscape {
+    padding-left: max(0.5rem, var(--safe-left));
+    padding-right: max(0.5rem, var(--safe-right));
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Portrait rotate-device prompt                                        */
+/* ------------------------------------------------------------------ */
+
+.rotate-prompt {
+  display: none;
+}
+
+@media (orientation: portrait) {
+  .rotate-prompt {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    background: var(--surface);
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 0.9rem;
+    letter-spacing: 0.05em;
+    pointer-events: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Pulse animation for Gemini speaking indicator                        */
+/* ------------------------------------------------------------------ */
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+.gemini-speaking {
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------ */
+/* Rotate icon animation                                                */
+/* ------------------------------------------------------------------ */
+
+@keyframes rotate-hint {
+  0%, 100% { transform: rotate(0deg); }
+  30%       { transform: rotate(90deg); }
+  70%       { transform: rotate(90deg); }
+}
+
+.rotate-hint-icon {
+  animation: rotate-hint 2.5s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------ */
+/* Now-playing animated bars (QueueView)                                */
+/* ------------------------------------------------------------------ */
+
+@keyframes playing-bar {
+  0%   { transform: scaleY(0.4); }
+  100% { transform: scaleY(1); }
+}
+
+.playing-bar {
+  animation: playing-bar 0.8s ease-in-out infinite alternate;
+  transform-origin: bottom;
+}
+
+/* ------------------------------------------------------------------ */
+/* Broadcast mode: hide cursor from FFmpeg capture                      */
+/* ------------------------------------------------------------------ */
+
+body.broadcast-mode, body.broadcast-mode * {
+  cursor: none !important;
+}
+
+/* ------------------------------------------------------------------ */
+/* Broadcast UI animations                                              */
+/* ------------------------------------------------------------------ */
+
+@keyframes chatSlideIn {
+  from { opacity: 0; transform: translateX(-20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes superChatAppear {
+  0% { opacity: 0; transform: scale(0.8) translateY(20px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes statusPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.85; } }
+@keyframes liveDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes orbPulse { 0%, 100% { transform: scale(1); opacity: 0.6; } 50% { transform: scale(1.15); opacity: 1; } }
+@keyframes audioBar { from { height: 8px; } to { height: 36px; } }
+@keyframes captionFadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ------------------------------------------------------------------ */
+/* Voice effects active indicator                                        */
+/* ------------------------------------------------------------------ */
+
+@keyframes effect-ring-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1.2); }
+  50% { opacity: 0.6; transform: scale(1.35); }
+}
+
+.effects-active-ring {
+  animation: effect-ring-pulse 2s ease-in-out infinite;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  box-shadow: 0 0 12px rgba(168, 85, 247, 0.2);
+}
