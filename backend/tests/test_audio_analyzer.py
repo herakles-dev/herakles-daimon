@@ -83,6 +83,23 @@ def _a_minor_chord(duration_s: float = 3.0, sr: int = 22050) -> np.ndarray:
     return signal.astype(np.float32)
 
 
+def _click_track(bpm: float = 120.0, duration_s: float = 4.0, sr: int = 22050) -> np.ndarray:
+    """A periodic click train at *bpm* — unlike a continuous sine tone, this
+    has real percussive onsets for librosa's beat tracker to lock onto."""
+    n_samples = int(sr * duration_s)
+    signal = np.zeros(n_samples, dtype=np.float32)
+    interval = sr * 60.0 / bpm
+    click_len = int(sr * 0.02)  # 20ms click
+    t_click = np.linspace(0, 0.02, click_len, endpoint=False)
+    click = (np.sin(2.0 * math.pi * 1000.0 * t_click) * np.exp(-t_click * 80)).astype(np.float32)
+    beat = 0
+    while (start := int(beat * interval)) < n_samples:
+        end = min(start + click_len, n_samples)
+        signal[start:end] += click[: end - start]
+        beat += 1
+    return signal
+
+
 # ---------------------------------------------------------------------------
 # TestCamelotWheel — mapping completeness + spot-checks
 # ---------------------------------------------------------------------------
@@ -345,7 +362,11 @@ class TestAnalyzeAudio:
             os.unlink(path)
 
     def test_bpm_is_positive_float(self):
-        signal = _sine(440.0, duration_s=4.0)
+        # A continuous, unmodulated sine tone has no rhythmic onsets, so
+        # librosa's beat tracker has nothing to lock onto and 0.0 is the
+        # honest answer for that input — use a click track with real
+        # periodic onsets to exercise actual beat detection instead.
+        signal = _click_track(bpm=120.0, duration_s=4.0)
         path = self._tmp_wav(signal)
         try:
             feats = asyncio.get_event_loop().run_until_complete(analyze_audio(path))
