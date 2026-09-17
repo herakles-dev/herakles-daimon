@@ -105,45 +105,45 @@ _AUDIOSET_TAG_MAP: dict[str, tuple[str, str]] = {
     "Flamenco":               ("genre", "flamenco"),
     # ---- Mood ----------------------------------------------------------------
     # High energy / intense
-    "Drum and bass":           ("mood", "energetic"),
-    "Techno":                  ("mood", "energetic"),
-    "Heavy metal":             ("mood", "intense"),
-    "Metal":                   ("mood", "intense"),
-    "Death metal":             ("mood", "intense"),
-    "Punk rock":               ("mood", "energetic"),
-    "Hard rock":               ("mood", "intense"),
-    "Dubstep":                 ("mood", "intense"),
-    "Electronic dance music":  ("mood", "energetic"),
-    "Music of Africa":         ("mood", "energetic"),
+    "Drum and bass (mood)":          ("mood", "energetic"),
+    "Techno (mood)":                 ("mood", "energetic"),
+    "Heavy metal (mood)":            ("mood", "intense"),
+    "Metal (mood)":                  ("mood", "intense"),
+    "Death metal (mood)":            ("mood", "intense"),
+    "Punk rock (mood)":              ("mood", "energetic"),
+    "Hard rock":                     ("mood", "intense"),
+    "Dubstep (mood)":                ("mood", "intense"),
+    "Electronic dance music (mood)": ("mood", "energetic"),
+    "Music of Africa":               ("mood", "energetic"),
     # Calm / relaxed / chill
-    "Ambient music":           ("mood", "calm"),
-    "Drone":                   ("mood", "calm"),
-    "New-age music":           ("mood", "relaxed"),
-    "Lullaby":                 ("mood", "calm"),
-    "Choral music":            ("mood", "peaceful"),
-    "Nature sounds":           ("mood", "relaxed"),
-    "Rain":                    ("mood", "chill"),
+    "Ambient music (mood)":          ("mood", "calm"),
+    "Drone (mood)":                  ("mood", "calm"),
+    "New-age music (mood)":          ("mood", "relaxed"),
+    "Lullaby":                       ("mood", "calm"),
+    "Choral music (mood)":           ("mood", "peaceful"),
+    "Nature sounds":                 ("mood", "relaxed"),
+    "Rain":                          ("mood", "chill"),
     # Upbeat / happy
-    "Disco":                   ("mood", "upbeat"),
-    "Funk":                    ("mood", "upbeat"),
-    "Ska":                     ("mood", "upbeat"),
-    "Music for children":      ("mood", "happy"),
-    "Cheerful music":          ("mood", "happy"),
-    "Happy music":             ("mood", "happy"),
+    "Disco (mood)":                  ("mood", "upbeat"),
+    "Funk (mood)":                   ("mood", "upbeat"),
+    "Ska (mood)":                    ("mood", "upbeat"),
+    "Music for children (mood)":     ("mood", "happy"),
+    "Cheerful music":                ("mood", "happy"),
+    "Happy music":                   ("mood", "happy"),
     # Sad / melancholic
-    "Sad music":               ("mood", "melancholic"),
-    "Slow music":              ("mood", "melancholic"),
+    "Sad music":                     ("mood", "melancholic"),
+    "Slow music":                    ("mood", "melancholic"),
     # Dark / moody
-    "Dark music":              ("mood", "dark"),
-    "Scary music":             ("mood", "dark"),
-    "Tense music":             ("mood", "moody"),
-    "Suspenseful music":       ("mood", "moody"),
+    "Dark music":                    ("mood", "dark"),
+    "Scary music":                   ("mood", "dark"),
+    "Tense music":                   ("mood", "moody"),
+    "Suspenseful music":             ("mood", "moody"),
     # Romantic
-    "Romantic music":          ("mood", "romantic"),
-    "Love song":               ("mood", "romantic"),
+    "Romantic music":                ("mood", "romantic"),
+    "Love song":                     ("mood", "romantic"),
     # Motivational
-    "March":                   ("mood", "motivational"),
-    "Sports music":            ("mood", "energetic"),
+    "March":                         ("mood", "motivational"),
+    "Sports music":                  ("mood", "energetic"),
     # ---- Instruments ---------------------------------------------------------
     "Guitar":                  ("instrument", "guitar"),
     "Electric guitar":         ("instrument", "guitar"),
@@ -203,9 +203,13 @@ _AUDIOSET_TAG_MAP: dict[str, tuple[str, str]] = {
     "Whistling":               ("instrument", "vocals"),
 }
 
-# Duplicate entries exist intentionally — some AudioSet labels map to both a
-# genre tag AND a mood tag.  We iterate the mapping with explicit key→(cat,tag)
-# so the same label cannot produce duplicate (category, tag) pairs.
+# Some AudioSet labels map to both a genre tag AND a mood tag (e.g. "Ambient
+# music" is genre "ambient" and mood "calm"). A plain dict can't hold the same
+# key twice — the later definition would silently overwrite the earlier one —
+# so the second occurrence carries a " (mood)" suffix on its key to keep it
+# distinct. _classify_sync() below matches on the label prefix (up to the
+# " (" marker) rather than requiring an exact key, so both entries still fire
+# for the one AudioSet label the model actually returns.
 
 # ---------------------------------------------------------------------------
 # ASTResult dataclass
@@ -388,8 +392,9 @@ def _classify_sync(file_path: str, confidence_threshold: float) -> ASTResult:
     instrument_set: set[str] = set()
 
     for label, _prob in top_classes:
-        if label in _AUDIOSET_TAG_MAP:
-            category, tag = _AUDIOSET_TAG_MAP[label]
+        for map_key, (category, tag) in _AUDIOSET_TAG_MAP.items():
+            if map_key != label and not map_key.startswith(f"{label} ("):
+                continue
             if category == "genre":
                 genre_set.add(tag)
             elif category == "mood":
