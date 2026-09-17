@@ -22,12 +22,6 @@ AI-curated, mood-responsive media platform built with the Gemini Live API. An au
 
 ---
 
-## Screenshot
-
-*Add a screenshot here.*
-
----
-
 ## Quick Start
 
 ### Prerequisites
