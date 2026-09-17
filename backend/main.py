@@ -1160,6 +1160,8 @@ def _track_record_to_dict(row) -> dict:
         "artist": row["artist"],
         "album": row["album"],
         "duration_sec": row["duration_sec"],
+        "hls_path": row["hls_path"],
+        "artwork_path": row["artwork_path"],
         "hls_url": f"/api/tracks/{track_id}/stream.m3u8" if row["hls_path"] else None,
         "artwork_url": f"/api/tracks/{track_id}/artwork" if row["artwork_path"] else None,
         "status": row["status"],
